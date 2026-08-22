@@ -8,10 +8,10 @@ All fixes have been deployed. The hierarchical retrieval pipeline is fully imple
 
 ## 📋 Quick Links
 
-- **Just started?** → [QUICK_START_CHECKLIST.md](QUICK_START_CHECKLIST.md)
+- **Just started** → [QUICK_START_CHECKLIST.md](QUICK_START_CHECKLIST.md)
 - **Need details on what was fixed?** → [HIERARCHICAL_PIPELINE_FIXES.md](HIERARCHICAL_PIPELINE_FIXES.md)
 - **Want to understand the data flow?** → [DATA_FLOW_EXAMPLES.md](DATA_FLOW_EXAMPLES.md)
-- **Looking for API reference?** → [FUNCTION_SIGNATURES_REFERENCE.md](FUNCTION_SIGNATURES_REFERENCE.md)
+- **Looking for API reference** → [FUNCTION_SIGNATURES_REFERENCE.md](FUNCTION_SIGNATURES_REFERENCE.md)
 - **Ready to deploy?** → [SYSTEM_SUMMARY_AND_NEXT_STEPS.md](SYSTEM_SUMMARY_AND_NEXT_STEPS.md)
 
 ---
