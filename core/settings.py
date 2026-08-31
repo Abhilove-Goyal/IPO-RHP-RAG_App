@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     embedding_model: str = "jina-embeddings-v3"
     rerank_model: str = "jina-reranker-v2-base-multilingual"
 
-    chroma_persist_dir: str = "data/chroma"
     collection_name: str = "rag_drhp"
     chunk_size: int = 800
     chunk_overlap: int = 120
@@ -26,7 +25,6 @@ class Settings(BaseSettings):
     data_path: str = "data"
     log_path: str = "logs/results.json"
     docs_dir: Path = Path("data/docs")
-    vector_dir: Path = Path("data/chroma")
 
     supabase_url: str | None = None
     supabase_anon_key: str | None = None

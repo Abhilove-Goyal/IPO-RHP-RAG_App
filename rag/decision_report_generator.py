@@ -8,7 +8,7 @@ from rag.retriever import retrieve_multi
 from rag.ingestion import load_chunk_documents
 from rag.non_negotiable_questions import NON_NEGOTIABLE_QUESTIONS
 
-from core.supabase_client import supabase
+from core.supabase_client import get_document_stats
 
 
 # --------------------------------------------------
@@ -35,12 +35,7 @@ def sanitize(obj):
 
 def ensure_embeddings_exist(ipo_id: str):
 
-    result = (
-        supabase.table("ipo_chunks")
-        .select("id", count="exact")
-        .eq("ipo_id", ipo_id)
-        .execute()
-    )
+    result = get_document_stats(ipo_id)
 
     if result.count == 0:
         print(f"[REPORT] No embeddings found for {ipo_id}. Running ingestion.")

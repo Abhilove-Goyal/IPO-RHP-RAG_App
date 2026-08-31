@@ -40,9 +40,9 @@ def ensure_embeddings_exist(ipo_id: str):
     """Check if chunks are indexed, if not run ingestion."""
     existing = execute_supabase(
         "check indexed chunks",
-        supabase.table("ipo_chunks")
+        supabase.table("document_chunks")
         .select("id", count="exact")
-        .eq("ipo_id", ipo_id)
+        .eq("document_id", ipo_id)
     )
 
     if existing.count == 0:
@@ -97,18 +97,18 @@ def run(query: str):
     # If server restarted and runtime lost IPO, recover from DB
     if ipo_id is None:
         result = execute_supabase(
-            "recover uploaded IPO",
-            supabase.table("ipos")
-            .select("ipo_id")
+            "recover uploaded document",
+            supabase.table("documents")
+            .select("id")
             .limit(1)
         )
 
         if not result.data:
-            raise ValueError("No IPO uploaded yet. Please upload a DRHP PDF first.")
+            raise ValueError("No document uploaded yet. Please upload a DRHP PDF first.")
 
-        ipo_id = result.data[0]["ipo_id"]
+        ipo_id = result.data[0]["id"]
         runtime.set_current_ipo(ipo_id)
-        print(f"[MAIN] Using IPO from DB: {ipo_id}")
+        print(f"[MAIN] Using document from DB: {ipo_id}")
 
     # Ensure embeddings exist
     ensure_embeddings_exist(ipo_id)

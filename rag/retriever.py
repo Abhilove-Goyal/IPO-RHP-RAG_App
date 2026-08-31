@@ -74,10 +74,10 @@ def _fetch_candidate_chunks(ipo_id: str, top_sections: List[Dict]) -> List[Dict]
 
     if not page_ranges:
         result = execute_supabase(
-            "retrieve IPO chunks",
-            supabase.table("ipo_chunks")
+            "retrieve document chunks",
+            supabase.table("document_chunks")
             .select("*")
-            .eq("ipo_id", ipo_id)
+            .eq("document_id", ipo_id)
             .limit(500)
         )
         return result.data or []
@@ -85,10 +85,10 @@ def _fetch_candidate_chunks(ipo_id: str, top_sections: List[Dict]) -> List[Dict]
     chunks = []
     for start_page, end_page in page_ranges:
         result = execute_supabase(
-            f"retrieve IPO chunks for pages {start_page}-{end_page}",
-            supabase.table("ipo_chunks")
+            f"retrieve document chunks for pages {start_page}-{end_page}",
+            supabase.table("document_chunks")
             .select("*")
-            .eq("ipo_id", ipo_id)
+            .eq("document_id", ipo_id)
             .gte("page_number", start_page)
             .lte("page_number", end_page)
             .limit(300)
@@ -235,9 +235,9 @@ def vector_search(
         # Query Supabase for similar chunks
         results = execute_supabase(
             "run vector-search fallback retrieval",
-            supabase.table("ipo_chunks")
+            supabase.table("document_chunks")
             .select("*")
-            .eq("ipo_id", ipo_id)
+            .eq("document_id", ipo_id)
             .limit(top_k * 2)
         )
         
@@ -279,9 +279,9 @@ def bm25_search(
         # Get all chunks for this document
         results = execute_supabase(
             "load chunks for BM25 search",
-            supabase.table("ipo_chunks")
+            supabase.table("document_chunks")
             .select("*")
-            .eq("ipo_id", ipo_id)
+            .eq("document_id", ipo_id)
         )
         
         if not results.data:

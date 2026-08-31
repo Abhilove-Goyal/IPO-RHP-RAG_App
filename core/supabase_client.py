@@ -37,14 +37,15 @@ supabase = create_client(
 
 
 # --------------------------------------------------
-# New schema helpers
+# Document metadata helpers
 # --------------------------------------------------
 
-def insert_document(
+def create_document(
+    *,
     document_id: str,
-    document_name: str,
     user_id: str | None = None,
     company_name: str | None = None,
+    document_name: str | None = None,
     document_hash: str | None = None,
     storage_key: str | None = None,
     file_size: int | None = None,
@@ -64,27 +65,56 @@ def insert_document(
         "processing_status": processing_status,
         "processing_error": processing_error,
     }
-    return execute_supabase("save document metadata", supabase.table("documents").upsert(payload))
+    return execute_supabase("create or upsert document metadata", supabase.table("documents").upsert(payload))
 
 
-# --------------------------------------------------
-# Legacy compatibility wrapper for older calls
-# --------------------------------------------------
+def get_document_by_hash(document_hash: str):
+    return execute_supabase(
+        "fetch document by hash",
+        supabase.table("documents").select("*").eq("document_hash", document_hash).limit(1)
+    )
 
-def insert_ipo(ipo_id: str, document_path: str, user_id: str | None = None):
-    """Backward-compatible wrapper that stores the same document under the new schema."""
-    return insert_document(
-        document_id=ipo_id,
-        document_name=document_path.split("/")[-1] if document_path else ipo_id,
-        user_id=user_id,
-        storage_key=document_path,
-        processing_status="uploaded",
+
+def get_document_by_id(document_id: str):
+    return execute_supabase(
+        "fetch document by id",
+        supabase.table("documents").select("*").eq("id", document_id).limit(1)
     )
 
 
 # --------------------------------------------------
-# Insert chunk embeddings into new document_chunks table
+# Document chunk helpers
 # --------------------------------------------------
+
+def insert_document_chunk(
+    *,
+    document_id: str,
+    chunk_index: int,
+    chunk_text: str,
+    page_number: int | None = None,
+    section: str | None = None,
+    subsection: str | None = None,
+    chunk_tokens: int | None = None,
+    embedding: list | None = None,
+    embedding_model: str | None = None,
+    metadata: dict | None = None,
+):
+    payload = {
+        "document_id": document_id,
+        "chunk_index": chunk_index,
+        "chunk_text": chunk_text,
+        "page_number": page_number,
+        "section": section,
+        "subsection": subsection,
+        "chunk_tokens": chunk_tokens,
+        "embedding": embedding,
+        "embedding_model": embedding_model or getattr(settings, "embedding_model", "unknown"),
+        "metadata": metadata or {},
+    }
+    return execute_supabase("insert document chunk", supabase.table("document_chunks").insert(payload))
+
+
+# Compatibility alias for older callers that pass chunk_number instead of chunk_index
 
 def insert_chunk(
     document_id: str,
@@ -99,98 +129,87 @@ def insert_chunk(
     subsection: str | None = None,
     metadata: dict | None = None,
 ):
-    data = {
-        "document_id": document_id,
-        "chunk_index": chunk_number,
-        "chunk_text": chunk_text,
-        "page_number": page_number,
-        "section": section,
-        "subsection": subsection,
-        "chunk_tokens": chunk_tokens,
-        "embedding": embedding,
-        "embedding_model": embedding_model or getattr(settings, "embedding_model", "unknown"),
-        "metadata": metadata or {"document_name": document_name},
-    }
-    return execute_supabase("save document chunk", supabase.table("document_chunks").insert(data))
-
-
-# --------------------------------------------------
-# Backward compatibility for older callers
-# --------------------------------------------------
-
-def insert_ipo_chunk(
-    ipo_id: str,
-    chunk_text: str,
-    chunk_number: int,
-    page_number: int,
-    section: str,
-    embedding: list,
-    document_name: str = "unknown",
-    chunk_tokens: int = 0,
-):
-    return insert_chunk(
-        document_id=ipo_id,
+    return insert_document_chunk(
+        document_id=document_id,
+        chunk_index=chunk_number,
         chunk_text=chunk_text,
-        chunk_number=chunk_number,
         page_number=page_number,
         section=section,
-        embedding=embedding,
-        document_name=document_name,
+        subsection=subsection,
         chunk_tokens=chunk_tokens,
+        embedding=embedding,
+        embedding_model=embedding_model or getattr(settings, "embedding_model", "unknown"),
+        metadata={**(metadata or {}), "document_name": document_name},
     )
 
 
 # --------------------------------------------------
-# Vector retrieval using pgvector RPC
+# Vector retrieval using the new Supabase RPC
 # --------------------------------------------------
 
-def retrieve_chunks(query_embedding, document_id, limit, query_text: str = ""):
-    """Retrieve chunks for a document using the current Supabase vector function."""
-    rpc_args = {
-        "query_embedding": query_embedding,
-        "query_text": query_text,
-        "document_id": document_id,
-        "match_count": limit,
-    }
+def retrieve_document_chunks(query_embedding, document_id: str, match_count: int = 20):
+    result = execute_supabase(
+        "retrieve matching document chunks",
+        supabase.rpc(
+            "match_document_chunks",
+            {
+                "query_embedding": query_embedding,
+                "p_document_id": document_id,
+                "match_count": match_count,
+            },
+        ),
+    )
+    return result.data if getattr(result, "data", None) is not None else []
 
-    for rpc_name in ("hybrid_match_document_chunks", "hybrid_match_chunks"):
-        try:
-            result = execute_supabase(
-                f"retrieve matching chunks via {rpc_name}",
-                supabase.rpc(rpc_name, rpc_args)
-            )
-            if result and getattr(result, "data", None):
-                return result.data
-        except Exception:
-            continue
 
-    return []
+# Compatibility alias for older callers that still treat this as a generic chunk retrieval function.
+
+def retrieve_chunks(query_embedding, document_id: str, limit: int = 20):
+    return retrieve_document_chunks(query_embedding, document_id, match_count=limit)
 
 
 # --------------------------------------------------
 # Query logging
 # --------------------------------------------------
 
+def log_rag_query(user_id, document_id, question, answer):
+    payload = {
+        "user_id": user_id,
+        "document_id": document_id,
+        "question": question,
+        "answer": answer,
+    }
+    return execute_supabase("log rag query", supabase.table("rag_queries").insert(payload))
+
+
+# Backward-compatible name for older call sites
+
 def log_query(user_id, document_id, question, answer):
-    return execute_supabase(
-        "log question",
-        supabase.table("rag_queries").insert({
-            "user_id": user_id,
-            "document_id": document_id,
-            "question": question,
-            "answer": answer,
-        })
-    )
+    return log_rag_query(user_id, document_id, question, answer)
 
 
 # --------------------------------------------------
 # Trace logging
 # --------------------------------------------------
 
+def create_or_update_rag_trace(*, trace_id=None, document_id=None, model=None, retrieved_chunks=None, reranked_chunks=None, chunks_used=None, faithfulness=None, latency_ms=None):
+    payload = {
+        "trace_id": trace_id,
+        "document_id": document_id,
+        "model": model,
+        "retrieved_chunks": retrieved_chunks,
+        "reranked_chunks": reranked_chunks,
+        "chunks_used": chunks_used,
+        "faithfulness": faithfulness,
+        "latency_ms": latency_ms,
+    }
+    return execute_supabase("create or update rag trace", supabase.table("rag_traces").upsert(payload))
+
+
 def log_result(data: dict):
     payload = {
         "trace_id": data.get("trace_id"),
-        "document_id": data.get("ipo_id") or data.get("document_id"),
+        "document_id": data.get("document_id") or data.get("ipo_id"),
         "model": data.get("model"),
         "retrieved_chunks": data.get("retrieved_chunks"),
         "reranked_chunks": data.get("reranked_chunks"),
@@ -198,19 +217,36 @@ def log_result(data: dict):
         "faithfulness": data.get("faithfulness"),
         "latency_ms": data.get("latency_ms"),
     }
-    return execute_supabase("log rag trace", supabase.table("rag_traces").insert(payload))
+    return create_or_update_rag_trace(**payload)
 
 
 # --------------------------------------------------
-# Admin utilities
+# Document operations
 # --------------------------------------------------
 
 def list_documents():
     return execute_supabase("list documents", supabase.table("documents").select("*"))
 
 
-def list_ipos():
-    return list_documents()
+def get_document_stats(document_id: str):
+    return execute_supabase(
+        "read document stats",
+        supabase.table("document_chunks")
+        .select("id", count="exact")
+        .eq("document_id", document_id)
+    )
+
+
+def list_document_chunks(document_id: str, *, limit: int = 500, start_page: int | None = None, end_page: int | None = None):
+    query = supabase.table("document_chunks").select("*").eq("document_id", document_id)
+    if start_page is not None:
+        query = query.gte("page_number", start_page)
+    if end_page is not None:
+        query = query.lte("page_number", end_page)
+    return execute_supabase(
+        "fetch document chunks for document",
+        query.limit(limit)
+    )
 
 
 def delete_document(document_id: str):
@@ -224,26 +260,52 @@ def delete_document(document_id: str):
     )
 
 
+# Backward-compatible aliases for older code paths
+
+def insert_ipo(ipo_id: str, document_path: str, user_id: str | None = None):
+    return create_document(
+        document_id=ipo_id,
+        user_id=user_id,
+        document_name=document_path.split("/")[-1] if document_path else ipo_id,
+        storage_key=document_path,
+        processing_status="uploaded",
+    )
+
+
+def insert_ipo_chunk(
+    ipo_id: str,
+    chunk_text: str,
+    chunk_number: int,
+    page_number: int,
+    section: str,
+    embedding: list,
+    document_name: str = "unknown",
+    chunk_tokens: int = 0,
+):
+    return insert_document_chunk(
+        document_id=ipo_id,
+        chunk_index=chunk_number,
+        chunk_text=chunk_text,
+        page_number=page_number,
+        section=section,
+        chunk_tokens=chunk_tokens,
+        embedding=embedding,
+        metadata={"document_name": document_name},
+    )
+
+
+def list_ipos():
+    return list_documents()
+
+
+def ipo_stats(ipo_id: str):
+    return get_document_stats(ipo_id)
+
+
 def delete_ipo(ipo_id: str):
     return delete_document(ipo_id)
 
 
-def document_stats(document_id: str):
-    return execute_supabase(
-        "read document stats",
-        supabase.table("document_chunks")
-        .select("id", count="exact")
-        .eq("document_id", document_id)
-    )
-
-
-def ipo_stats(ipo_id: str):
-    return document_stats(ipo_id)
-
-
 # --------------------------------------------------
-# Backward-compatible aliases for older code paths
-# --------------------------------------------------
-
-# Some older code expects a row named "ipo_id" in the metadata table.
-# This table is now documents.id, so we normalize on the application side.
+# This module intentionally avoids legacy table and RPC names.
+# The old ipos/ipo_chunks/queries and hybrid_match_* names are deprecated.

@@ -1,30 +1,29 @@
 import os
-from fastapi import APIRouter, UploadFile, File
 from core.settings import settings
-from core.supabase_client import supabase
-import asyncio
+from core.supabase_client import list_documents, get_document_stats, delete_document
 
 # Ensure directory exists
 os.makedirs(settings.data_path, exist_ok=True)
 
+
 def list_all_ipos():
-    response = supabase.table("ipos").select("ipo_id, ipo_name").execute()
+    response = list_documents()
     ipos = []
     for row in response.data:
-        ipo_id = row['ipo_id']
-        # Get chunk count
-        count_response = supabase.table("ipo_chunks").select("*", count="exact").eq("ipo_id", ipo_id).execute()
-        chunks = count_response.count
-        ipos.append({"ipo_id": ipo_id, "chunks": chunks})
+        document_id = row.get("id") or row.get("document_id")
+        if not document_id:
+            continue
+        count_response = get_document_stats(document_id)
+        chunks = count_response.count or 0
+        ipos.append({"ipo_id": document_id, "chunks": chunks})
     return ipos
 
+
 def delete_ipo_vectors(ipo_id: str):
-    # Delete from ipo_chunks
-    supabase.table("ipo_chunks").delete().eq("ipo_id", ipo_id).execute()
-    # Also delete from ipos
-    supabase.table("ipos").delete().eq("ipo_id", ipo_id).execute()
+    delete_document(ipo_id)
     print(f"IPO {ipo_id} vectors and metadata deleted")
 
+
 def get_ipo_stats(ipo_id: str):
-    response = supabase.table("ipo_chunks").select("*", count="exact").eq("ipo_id", ipo_id).execute()
-    return {"total_chunks": response.count}
+    response = get_document_stats(ipo_id)
+    return {"total_chunks": response.count or 0}
