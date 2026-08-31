@@ -12,15 +12,24 @@ from core.settings import settings
 from core.supabase_client import DatabaseConnectionError, DatabaseOperationError, insert_chunk, insert_ipo
 
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 
 # --------------------------------------------------
 # Embedding model and tokenizer
 # --------------------------------------------------
 
-embed_model = HuggingFaceEmbeddings(
-    model_name=settings.embedding_model
-)
+def get_embed_model():
+    if settings.jina_api_key:
+        return OpenAIEmbeddings(
+            model=settings.jina_embedding_model or settings.embedding_model,
+            api_key=settings.jina_api_key,
+            base_url="https://api.jina.ai/v1",
+        )
+    return HuggingFaceEmbeddings(model_name=settings.embedding_model)
+
+
+embed_model = get_embed_model()
 
 # Use cl100k_base tokenizer (used by most embedding models)
 tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -90,75 +99,80 @@ def count_tokens(text: str) -> int:
 # Semantic chunking with token-based boundaries
 # --------------------------------------------------
 
-def split_into_semantic_chunks(
-    text: str,
-    chunk_size: int = 400,
-    overlap: int = 50
-) -> List[str]:
-    """
-    Split text into semantic chunks with token-based sizing.
-    
-    Args:
-        text: Text to chunk
-        chunk_size: Target tokens per chunk (default 400)
-        overlap: Token overlap between chunks (default 50)
-    
-    Returns:
-        List of chunks, each approximately chunk_size tokens
-    """
+def _split_blocks(text: str) -> List[str]:
+    """Split text into structurally meaningful blocks."""
+    blocks = []
+    for block in re.split(r"\n{2,}|(?<=[.!?])\s+(?=[A-Z])", text.strip()):
+        cleaned = re.sub(r"\s+", " ", block).strip()
+        if cleaned:
+            blocks.append(cleaned)
+    return blocks
+
+
+def recursive_chunk_text(text: str, chunk_size: int = 800, overlap: int = 120) -> List[str]:
+    """Paragraph-aware recursive chunking for long financial documents."""
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return []
+
+    if count_tokens(cleaned) <= chunk_size:
+        return [cleaned]
+
+    blocks = _split_blocks(cleaned)
+    if len(blocks) == 1:
+        return [cleaned]
+
     chunks = []
-    sentences = []
-    
-    # Split by sentence (more semantic than character boundaries)
-    # Handle various sentence endings
-    sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])(?=[A-Z])'
-    parts = re.split(sentence_pattern, text)
-    
-    current_chunk = ""
+    current = ""
     current_tokens = 0
-    
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        
-        part_tokens = count_tokens(part)
-        
-        # If adding this part would exceed chunk_size, save current chunk
-        if current_tokens + part_tokens > chunk_size and current_chunk:
-            chunks.append(current_chunk.strip())
-            
-            # Start new chunk with overlap
-            # Keep last few sentences for overlap
-            overlap_sentences = []
+
+    for block in blocks:
+        block_tokens = count_tokens(block)
+        if current and current_tokens + block_tokens > chunk_size:
+            chunks.append(current.strip())
+
+            overlap_buffer = []
             overlap_tokens = 0
-            
-            for sent in reversed(current_chunk.split('.')):
-                sent = sent.strip()
-                if not sent:
+            for tail in reversed(current.split(" ")):
+                tail = tail.strip()
+                if not tail:
                     continue
-                sent_tokens = count_tokens(sent)
-                if overlap_tokens + sent_tokens <= overlap:
-                    overlap_sentences.insert(0, sent)
-                    overlap_tokens += sent_tokens
+                tail_tokens = count_tokens(tail)
+                if overlap_tokens + tail_tokens <= overlap:
+                    overlap_buffer.insert(0, tail)
+                    overlap_tokens += tail_tokens
                 else:
                     break
-            
-            current_chunk = '. '.join(overlap_sentences) + '. ' if overlap_sentences else ""
+            current = " ".join(overlap_buffer).strip()
             current_tokens = overlap_tokens
-        
-        current_chunk += " " + part
-        current_tokens += part_tokens
-    
-    # Add final chunk
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-    
-    return [c for c in chunks if c.strip()]  # Filter empty chunks
+
+        current = (current + " " + block).strip() if current else block
+        current_tokens = count_tokens(current)
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def split_into_semantic_chunks(
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 120
+) -> List[str]:
+    """
+    Split text into structure-aware semantic chunks.
+    For long financial disclosures, this keeps paragraph-level semantics and recursively subdivides large blocks.
+    """
+    chunks: List[str] = []
+    for block in _split_blocks(text):
+        block_chunks = recursive_chunk_text(block, chunk_size=chunk_size, overlap=overlap)
+        chunks.extend(block_chunks)
+    return chunks
 
 
 def split_into_chunks(text, chunk_size, overlap=200):
-    """Legacy function - now uses semantic chunking."""
+    """Legacy function - now uses recursive semantic chunking."""
     return split_into_semantic_chunks(text, chunk_size, overlap)
 
 
@@ -294,11 +308,11 @@ def load_chunk_documents():
                 if detected_section:
                     current_section = detected_section
 
-                # Semantic chunking with tokens
+                # Structure-aware chunking with table/text/chart-aware metadata handling
                 page_chunks = split_into_semantic_chunks(
                     text,
-                    chunk_size=400,  # 400 tokens per chunk
-                    overlap=50       # 50 token overlap
+                    chunk_size=settings.chunk_size,
+                    overlap=settings.chunk_overlap
                 )
 
                 for chunk_text in page_chunks:
