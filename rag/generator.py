@@ -26,12 +26,15 @@ def generate_answer(query: str, context_chunks: List[Dict]) -> tuple[str, float]
         Tuple of (answer_text, faithfulness_score)
     """
     try:
+        if not settings.groq_api_key:
+            raise RuntimeError("Groq API key is not configured in settings.")
+
         print(f"\n[GENERATOR] Starting answer generation")
         print(f"[GENERATOR] Query: {query[:60]}")
         print(f"[GENERATOR] Context chunks: {len(context_chunks)}")
         
         llm = ChatOpenAI(
-            model=settings.llm_model,
+            model=settings.groq_model,
             api_key=settings.groq_api_key,
             base_url="https://api.groq.com/openai/v1",
             temperature=0,

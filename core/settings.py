@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     top_k: int = 5
     vector_top_k: int = 20
     bm25_top_k: int = 20
+    fusion_top_k: int = 30
+    rrf_k: int = 60
     rerank_top_k: int = 5
     final_top_k: int = 5
     data_path: str = "data"
@@ -33,6 +35,13 @@ class Settings(BaseSettings):
     docs_dir: Path = Path("data/docs")
 
     supabase_url: str | None = None
+    supabase_service_role_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "supabase_service_role_key",
+        ),
+    )
     supabase_publishable_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices(

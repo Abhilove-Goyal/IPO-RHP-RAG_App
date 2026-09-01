@@ -9,7 +9,7 @@ Pipeline:
 """
 
 from rag.ingestion import load_chunk_documents
-from rag.retriever import retrieve_chunks_in_sections
+from rag.retriever import hybrid_search, rerank_hybrid_candidates
 from rag.multi_query import generate_queries
 from rag.generator import generate_answer
 from rag.logger import log_result
@@ -126,17 +126,14 @@ def run(query: str):
     # ====== STAGE 2: Chunk Retrieval (within sections) ======
     print(f"\n[MAIN] STAGE 2: Chunk-level retrieval")
     
-    # Generate query variations for better coverage
-    query_variations = generate_queries(query)
-    print(f"[MAIN] Query variations: {len(query_variations)}")
-    
-    # Retrieve chunks (within selected sections if available)
-    retrieved_chunks = retrieve_chunks_in_sections(
+    # Use the current vector + BM25 + RRF retrieval implementation.
+    retrieved_chunks = hybrid_search(
         query=query,
-        query_variations=query_variations,
-        ipo_id=ipo_id,
-        top_sections=top_sections,
-        limit=20
+        document_id=ipo_id,
+        vector_top_k=settings.vector_top_k,
+        bm25_top_k=settings.bm25_top_k,
+        fusion_top_k=settings.fusion_top_k,
+        rrf_k=settings.rrf_k,
     )
     
     print(f"[MAIN] Retrieved {len(retrieved_chunks)} chunks")
@@ -148,7 +145,7 @@ def run(query: str):
     # ====== STAGE 3: Reranking ======
     print(f"\n[MAIN] STAGE 3: Cross-encoder reranking")
     
-    final_chunks = rerank(query, retrieved_chunks, top_k=5)
+    final_chunks = rerank_hybrid_candidates(query, retrieved_chunks, top_k=5)
     
     print(f"[MAIN] Reranked to top {len(final_chunks)} chunks")
     for i, chunk in enumerate(final_chunks, 1):

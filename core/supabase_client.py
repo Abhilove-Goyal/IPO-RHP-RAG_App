@@ -27,7 +27,8 @@ def execute_supabase(operation: str, request):
 # Supabase Client
 # --------------------------------------------------
 
-supabase_key = settings.supabase_key or settings.supabase_anon_key or settings.supabase_publishable_key
+supabase_public_key = settings.supabase_key or settings.supabase_anon_key or settings.supabase_publishable_key
+supabase_key = settings.supabase_service_role_key or supabase_public_key
 
 if not settings.supabase_url or not supabase_key:
     raise RuntimeError("Supabase credentials missing")
@@ -36,6 +37,22 @@ supabase = create_client(
     settings.supabase_url,
     supabase_key
 )
+
+supabase_public = (
+    create_client(settings.supabase_url, supabase_public_key)
+    if settings.supabase_url and supabase_public_key
+    else None
+)
+
+
+def supabase_configuration_status() -> dict[str, bool]:
+    """Return safe credential presence flags without exposing secret values."""
+    return {
+        "supabase_url_configured": bool(settings.supabase_url),
+        "public_key_configured": bool(supabase_public_key),
+        "service_role_key_configured": bool(settings.supabase_service_role_key),
+        "backend_uses_service_role": bool(settings.supabase_service_role_key),
+    }
 
 
 # --------------------------------------------------
@@ -82,6 +99,29 @@ def get_document_by_id(document_id: str):
         "fetch document by id",
         supabase.table("documents").select("*").eq("id", document_id).limit(1)
     )
+
+
+# --------------------------------------------------
+# Document asset helpers
+# --------------------------------------------------
+
+def create_document_asset(
+    *,
+    document_id: str,
+    asset_type: str,
+    page_number: int | None = None,
+    storage_key: str | None = None,
+    content_type: str | None = None,
+    metadata: dict | None = None,
+):
+    payload = {
+        "document_id": document_id,
+        "asset_type": asset_type,
+        "page_number": page_number,
+        "storage_key": storage_key,
+        "metadata": {**(metadata or {}), "content_type": content_type},
+    }
+    return execute_supabase("insert document asset", supabase.table("document_assets").insert(payload))
 
 
 # --------------------------------------------------
