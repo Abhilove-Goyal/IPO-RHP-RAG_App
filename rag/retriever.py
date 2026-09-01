@@ -10,7 +10,7 @@ Stage 2 of multi-stage retrieval:
 
 import re
 from typing import List, Dict
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from core.settings import settings
 from core.supabase_client import execute_supabase, supabase
 
@@ -27,8 +27,12 @@ _embeddings = None
 def _get_embeddings():
     global _embeddings
     if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=settings.embedding_model
+        if not settings.jina_api_key:
+            raise RuntimeError("Jina API key is not configured for retrieval embeddings.")
+        _embeddings = OpenAIEmbeddings(
+            model=settings.jina_embedding_model,
+            api_key=settings.jina_api_key,
+            base_url="https://api.jina.ai/v1",
         )
     return _embeddings
 

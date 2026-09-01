@@ -20,10 +20,10 @@ def log_result(data: dict):
     """
     try:
         trace_id = uuid.uuid4()
-        
+
         payload = {
             "trace_id": str(trace_id),
-            "ipo_id": data.get("ipo_id", "unknown"),
+            "document_id": data.get("document_id") or data.get("ipo_id", "unknown"),
             "query": data.get("query", ""),
             "answer": data.get("answer", "")[:500],  # Truncate long answers
             "chunks_used": data.get("chunks_used", 0),

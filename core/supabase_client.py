@@ -27,12 +27,14 @@ def execute_supabase(operation: str, request):
 # Supabase Client
 # --------------------------------------------------
 
-if not settings.supabase_url or not settings.supabase_anon_key:
+supabase_key = settings.supabase_key or settings.supabase_anon_key or settings.supabase_publishable_key
+
+if not settings.supabase_url or not supabase_key:
     raise RuntimeError("Supabase credentials missing")
 
 supabase = create_client(
     settings.supabase_url,
-    settings.supabase_anon_key
+    supabase_key
 )
 
 
@@ -108,7 +110,7 @@ def insert_document_chunk(
         "subsection": subsection,
         "chunk_tokens": chunk_tokens,
         "embedding": embedding,
-        "embedding_model": embedding_model or getattr(settings, "embedding_model", "unknown"),
+        "embedding_model": embedding_model or getattr(settings, "jina_embedding_model", "jina-embeddings-v3"),
         "metadata": metadata or {},
     }
     return execute_supabase("insert document chunk", supabase.table("document_chunks").insert(payload))
@@ -138,7 +140,7 @@ def insert_chunk(
         subsection=subsection,
         chunk_tokens=chunk_tokens,
         embedding=embedding,
-        embedding_model=embedding_model or getattr(settings, "embedding_model", "unknown"),
+        embedding_model=embedding_model or getattr(settings, "jina_embedding_model", "jina-embeddings-v3"),
         metadata={**(metadata or {}), "document_name": document_name},
     )
 
@@ -209,7 +211,7 @@ def create_or_update_rag_trace(*, trace_id=None, document_id=None, model=None, r
 def log_result(data: dict):
     payload = {
         "trace_id": data.get("trace_id"),
-        "document_id": data.get("document_id") or data.get("ipo_id"),
+        "document_id": data.get("document_id") or data.get("document_id") or data.get("ipo_id"),
         "model": data.get("model"),
         "retrieved_chunks": data.get("retrieved_chunks"),
         "reranked_chunks": data.get("reranked_chunks"),

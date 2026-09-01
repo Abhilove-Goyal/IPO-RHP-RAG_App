@@ -11,7 +11,6 @@ from core.document_structure import set_toc
 from core.settings import settings
 from core.supabase_client import DatabaseConnectionError, DatabaseOperationError, insert_chunk, insert_ipo
 
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings
 
 
@@ -20,13 +19,13 @@ from langchain_openai import OpenAIEmbeddings
 # --------------------------------------------------
 
 def get_embed_model():
-    if settings.jina_api_key:
-        return OpenAIEmbeddings(
-            model=settings.jina_embedding_model or settings.embedding_model,
-            api_key=settings.jina_api_key,
-            base_url="https://api.jina.ai/v1",
-        )
-    return HuggingFaceEmbeddings(model_name=settings.embedding_model)
+    if not settings.jina_api_key:
+        raise RuntimeError("Jina API key is not configured. Local embedding models are not active for this codebase.")
+    return OpenAIEmbeddings(
+        model=settings.jina_embedding_model,
+        api_key=settings.jina_api_key,
+        base_url="https://api.jina.ai/v1",
+    )
 
 
 embed_model = get_embed_model()
@@ -204,7 +203,14 @@ def batch_embed_documents(texts: List[str], batch_size: int = 32) -> List[List[f
             # Use zero vectors as fallback
             embeddings.extend([[0.0] * 768 for _ in batch])
     
-    return embeddings
+    validated = []
+    for embedding in embeddings:
+        if len(embedding) != settings.embedding_dimension:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {settings.embedding_dimension}, got {len(embedding)}."
+            )
+        validated.append(embedding)
+    return validated
 
 
 # --------------------------------------------------
