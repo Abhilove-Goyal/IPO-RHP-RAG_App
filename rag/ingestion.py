@@ -19,6 +19,9 @@ from core.supabase_client import (
     get_document_by_hash,
     insert_document_chunk,
     insert_ipo,
+    list_document_assets,
+    list_document_chunks,
+    list_documents,
 )
 from rag.jina_embeddings import embed_texts
 from rag.toc_parser import extract_toc
@@ -176,6 +179,101 @@ def split_into_semantic_chunks(text: str, chunk_size: int = 800, overlap: int = 
     for block in _split_blocks(text):
         chunks.extend(recursive_chunk_text(block, chunk_size=chunk_size, overlap=overlap))
     return chunks
+
+
+def _extract_narrative_text(page) -> str:
+    """Extract page text while excluding words inside detected table bounds."""
+    tables = page.find_tables() or []
+    if not tables:
+        return _clean_page_text(page.extract_text() or "")
+
+    table_bounds = [table.bbox for table in tables]
+    words = page.extract_words(use_text_flow=True) or []
+    outside_words = []
+    for word in words:
+        x = (float(word.get("x0", 0)) + float(word.get("x1", 0))) / 2
+        y = (float(word.get("top", 0)) + float(word.get("bottom", 0))) / 2
+        if any(x0 <= x <= x1 and top <= y <= bottom for x0, top, x1, bottom in table_bounds):
+            continue
+        outside_words.append(word)
+
+    lines: Dict[float, List[str]] = {}
+    for word in outside_words:
+        top = round(float(word.get("top", 0)), 1)
+        lines.setdefault(top, []).append(str(word.get("text", "")))
+    text = "\n".join(" ".join(parts) for _, parts in sorted(lines.items()))
+    return _clean_page_text(text)
+
+
+def split_asset_search_text(asset: Dict[str, Any], max_tokens: int | None = None) -> List[str]:
+    """Split an asset search representation only at serialized row boundaries."""
+    search_text = _normalize_whitespace(asset.get("search_text") or "")
+    if not search_text:
+        return []
+    max_tokens = max_tokens or settings.chunk_size
+    if count_tokens(search_text) <= max_tokens:
+        return [search_text]
+
+    prefix, separator, rows_text = search_text.partition("Table rows: ")
+    if not separator:
+        return [search_text]
+
+    row_groups = [row.strip() for row in rows_text.split(" ; ") if row.strip()]
+    chunks: List[str] = []
+    current = prefix.strip()
+    for row in row_groups:
+        candidate = f"{current} Table rows: {row}" if current else row
+        if current and count_tokens(candidate) > max_tokens:
+            chunks.append(current)
+            current = f"{prefix.strip()} Table rows: {row}".strip()
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [search_text]
+
+
+def build_asset_chunk_entries(
+    *,
+    document_id: str,
+    document_name: str,
+    asset: Dict[str, Any],
+    chunk_index_start: int,
+    source_asset_id: str | None = None,
+) -> List[Dict[str, Any]]:
+    """Build searchable chunk rows for one persisted asset."""
+    asset_identifier = asset["source_identifier"]
+    text_parts = split_asset_search_text(asset)
+    entries = []
+    for offset, text in enumerate(text_parts, start=1):
+        identifier = asset_identifier if len(text_parts) == 1 else f"{asset_identifier}-{offset}"
+        metadata = {
+            "document_name": document_name,
+            "page_number": asset.get("page_number"),
+            "section": asset.get("section") or "general",
+            "subsection": asset.get("subsection"),
+            "source_type": asset.get("asset_type") or "asset",
+            "source_identifier": identifier,
+            "parent_source_identifier": asset_identifier,
+            "source_asset_id": source_asset_id,
+            "asset_type": asset.get("asset_type"),
+            "caption": asset.get("caption"),
+        }
+        if asset.get("asset_type") == "table":
+            metadata.update({"headers": asset.get("headers") or [], "rows": asset.get("rows") or []})
+        entries.append({
+            "document_id": document_id,
+            "document_name": document_name,
+            "chunk_index": chunk_index_start + offset - 1,
+            "chunk_text": text,
+            "page_number": asset.get("page_number"),
+            "section": asset.get("section") or "general",
+            "subsection": asset.get("subsection"),
+            "source_type": asset.get("asset_type") or "asset",
+            "metadata": metadata,
+            "chunk_tokens": count_tokens(text),
+        })
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +523,7 @@ def _process_chunk_batch(chunk_buffer: List[Dict[str, Any]]) -> int:
     return len(chunk_buffer)
 
 
-def _persist_page_assets(document_id: str, document_name: str, page, section: str, page_number: int) -> None:
+def _persist_page_assets(document_id: str, document_name: str, page, section: str, page_number: int) -> List[Dict[str, Any]]:
     assets = []
     assets.extend(_extract_table_metadata(page, page_number, section))
     assets.extend(_extract_figure_metadata(page, page_number, section))
@@ -449,16 +547,96 @@ def _persist_page_assets(document_id: str, document_name: str, page, section: st
                 **(asset.get("metadata") or {}),
                 "document_name": document_name,
                 "section": section,
+                "source_identifier": asset["source_identifier"],
                 "search_text": asset.get("search_text"),
                 "caption": asset.get("caption"),
             },
         }
         try:
-            create_document_asset(**payload)
+            response = create_document_asset(**payload)
+            asset_id = None
+            if getattr(response, "data", None):
+                asset_id = response.data[0].get("id")
+            asset["source_asset_id"] = asset_id
         except (DatabaseConnectionError, DatabaseOperationError):
             raise
         except Exception as exc:
             print(f"[INGEST] Failed to store asset metadata for {document_id} page {page_number}: {exc}")
+
+    return assets
+
+
+def backfill_missing_asset_chunks() -> int:
+    """Backfill searchable chunks for persisted R2-backed document assets."""
+    inserted = 0
+    documents = list_documents().data or []
+    for document in documents:
+        document_id = str(document.get("id"))
+        document_name = document.get("document_name") or document_id
+        existing_rows = list_document_chunks(document_id, limit=1000).data or []
+        existing_identifiers = set()
+        for row in existing_rows:
+            metadata = row.get("metadata") or {}
+            for key in ("source_identifier", "parent_source_identifier"):
+                if metadata.get(key):
+                    existing_identifiers.add(metadata[key])
+        next_chunk_index = max((int(row.get("chunk_index") or 0) for row in existing_rows), default=0) + 1
+
+        assets = list_document_assets(document_id, limit=1000).data or []
+        for asset_row in assets:
+            metadata = asset_row.get("metadata") or {}
+            storage_key = asset_row.get("storage_key")
+            if not storage_key:
+                continue
+            from core.r2_storage import download_bytes
+            asset = json.loads(download_bytes(storage_key).decode("utf-8"))
+            source_identifier = metadata.get("source_identifier") or asset.get("source_identifier")
+            if not source_identifier or source_identifier in existing_identifiers:
+                continue
+            asset.update({
+                "source_identifier": source_identifier,
+                "page_number": asset_row.get("page_number"),
+                "section": metadata.get("section") or asset.get("section"),
+                "subsection": metadata.get("subsection") or asset.get("subsection"),
+            })
+            entries = build_asset_chunk_entries(
+                document_id=document_id,
+                document_name=document_name,
+                asset=asset,
+                chunk_index_start=next_chunk_index,
+                source_asset_id=asset_row.get("id"),
+            )
+            _process_chunk_batch(entries)
+            inserted += len(entries)
+            next_chunk_index += len(entries)
+            existing_identifiers.add(source_identifier)
+    return inserted
+
+
+def _assert_page_asset_chunk_invariant(document_id: str, page_number: int, assets: List[Dict[str, Any]]) -> None:
+    if not assets:
+        return
+
+    chunk_response = list_document_chunks(document_id, limit=1000, start_page=page_number, end_page=page_number)
+    chunks = chunk_response.data or []
+    identifiers = [
+        (chunk.get("metadata") or {}).get("source_identifier")
+        for chunk in chunks
+    ]
+    parent_identifiers = [
+        (chunk.get("metadata") or {}).get("parent_source_identifier")
+        for chunk in chunks
+    ]
+    missing = []
+    for asset in assets:
+        source_identifier = asset.get("source_identifier")
+        if source_identifier not in identifiers and source_identifier not in parent_identifiers:
+            missing.append(source_identifier)
+    if missing:
+        raise RuntimeError(
+            f"Asset chunk invariant failed for document {document_id} page {page_number}: "
+            f"missing searchable chunks for {', '.join(missing)}"
+        )
 
 
 def load_chunk_documents():
@@ -501,92 +679,54 @@ def load_chunk_documents():
 
         print(f"\n[INGEST] Processing PDF: {file_name} (document_id={document_id})")
 
-        chunk_buffer: List[Dict[str, Any]] = []
+        next_chunk_index = 1
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 page_total = len(pdf.pages)
                 for page_number, page in enumerate(pdf.pages, start=1):
                     text = _clean_page_text(page.extract_text() or "")
-                    if not text or is_boilerplate(text):
-                        _persist_page_assets(document_id, document_name, page, "general", page_number)
-                        continue
+                    section = detect_section(text, fallback="general") if text else "general"
+                    page_assets = _persist_page_assets(document_id, document_name, page, section, page_number)
+                    page_buffer: List[Dict[str, Any]] = []
 
-                    section = detect_section(text, fallback="general")
-                    _persist_page_assets(document_id, document_name, page, section, page_number)
-
-                    narrative_chunks = split_into_semantic_chunks(text, chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
-                    for chunk_index, chunk_text in enumerate(narrative_chunks):
-                        chunk_buffer.append({
-                            "document_id": document_id,
-                            "document_name": document_name,
-                            "chunk_index": len(chunk_buffer) + 1,
-                            "chunk_text": chunk_text,
-                            "page_number": page_number,
-                            "section": section,
-                            "subsection": None,
-                            "source_type": "text",
-                            "metadata": {
+                    narrative_text = _extract_narrative_text(page)
+                    if narrative_text and not is_boilerplate(narrative_text):
+                        narrative_chunks = split_into_semantic_chunks(narrative_text, chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
+                        for chunk_text in narrative_chunks:
+                            page_buffer.append({
+                                "document_id": document_id,
                                 "document_name": document_name,
+                                "chunk_index": next_chunk_index + len(page_buffer),
+                                "chunk_text": chunk_text,
                                 "page_number": page_number,
                                 "section": section,
                                 "subsection": None,
                                 "source_type": "text",
-                                "chunk_index": len(chunk_buffer) + 1,
-                            },
-                            "chunk_tokens": count_tokens(chunk_text),
-                        })
+                                "metadata": {
+                                    "document_name": document_name,
+                                    "page_number": page_number,
+                                    "section": section,
+                                    "subsection": None,
+                                    "source_type": "text",
+                                    "chunk_index": next_chunk_index + len(page_buffer),
+                                },
+                                "chunk_tokens": count_tokens(chunk_text),
+                            })
 
-                    for table_asset in _extract_table_metadata(page, page_number, section):
-                        table_chunk_text = table_asset["search_text"]
-                        if not table_chunk_text:
-                            continue
-                        chunk_buffer.append({
-                            "document_id": document_id,
-                            "document_name": document_name,
-                            "chunk_index": len(chunk_buffer) + 1,
-                            "chunk_text": table_chunk_text,
-                            "page_number": page_number,
-                            "section": section,
-                            "subsection": table_asset.get("subsection"),
-                            "source_type": "table",
-                            "metadata": {
-                                "document_name": document_name,
-                                "page_number": page_number,
-                                "section": section,
-                                "subsection": table_asset.get("subsection"),
-                                "source_type": "table",
-                                "source_identifier": table_asset["source_identifier"],
-                                "asset_type": "table",
-                                "caption": table_asset.get("caption"),
-                            },
-                            "chunk_tokens": count_tokens(table_chunk_text),
-                        })
+                    for asset in page_assets:
+                        page_buffer.extend(build_asset_chunk_entries(
+                            document_id=document_id,
+                            document_name=document_name,
+                            asset=asset,
+                            chunk_index_start=next_chunk_index + len(page_buffer),
+                            source_asset_id=asset.get("source_asset_id"),
+                        ))
 
-                    for figure_asset in _extract_figure_metadata(page, page_number, section):
-                        figure_text = figure_asset["search_text"]
-                        if not figure_text:
-                            continue
-                        chunk_buffer.append({
-                            "document_id": document_id,
-                            "document_name": document_name,
-                            "chunk_index": len(chunk_buffer) + 1,
-                            "chunk_text": figure_text,
-                            "page_number": page_number,
-                            "section": section,
-                            "subsection": figure_asset.get("subsection"),
-                            "source_type": "chart",
-                            "metadata": {
-                                "document_name": document_name,
-                                "page_number": page_number,
-                                "section": section,
-                                "subsection": figure_asset.get("subsection"),
-                                "source_type": figure_asset["asset_type"],
-                                "source_identifier": figure_asset["source_identifier"],
-                                "asset_type": figure_asset["asset_type"],
-                                "caption": figure_asset.get("caption"),
-                            },
-                            "chunk_tokens": count_tokens(figure_text),
-                        })
+                    if page_buffer:
+                        _process_chunk_batch(page_buffer)
+                        total_chunks += len(page_buffer)
+                        next_chunk_index += len(page_buffer)
+                    _assert_page_asset_chunk_invariant(document_id, page_number, page_assets)
 
                 if page_total:
                     try:
@@ -618,8 +758,5 @@ def load_chunk_documents():
             except Exception:
                 pass
             raise RuntimeError(f"PDF processing failed for {file_name}: {exc}") from exc
-
-        if chunk_buffer:
-            total_chunks += _process_chunk_batch(chunk_buffer)
 
     return total_chunks

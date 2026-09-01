@@ -291,6 +291,16 @@ def list_document_chunks(document_id: str, *, limit: int = 500, start_page: int 
     )
 
 
+def list_document_assets(document_id: str, *, limit: int = 1000, page_number: int | None = None):
+    query = supabase.table("document_assets").select("*").eq("document_id", document_id)
+    if page_number is not None:
+        query = query.eq("page_number", page_number)
+    return execute_supabase(
+        "fetch document assets for document",
+        query.limit(limit)
+    )
+
+
 def delete_document(document_id: str):
     execute_supabase(
         "delete document chunks",

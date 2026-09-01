@@ -9,12 +9,18 @@ from pprint import pprint
 from core.settings import settings
 from core.startup import clean_startup
 from core.runtime_state import set_current_ipo, get_current_ipo, reset_current_ipo
-from core.supabase_client import DatabaseConnectionError, DatabaseOperationError
+from core.supabase_client import (
+    DatabaseConnectionError,
+    DatabaseOperationError,
+    get_document_by_hash,
+    execute_supabase,
+    supabase,
+)
 
 from rag.decision_report_generator import generate_decision_report, sanitize
 from rag.investment_verdict import generate_investment_verdict
 from rag.upload import list_all_ipos, delete_ipo_vectors, get_ipo_stats
-from rag.ingestion import load_chunk_documents
+from rag.ingestion import compute_document_hash, load_chunk_documents
 
 from main import run, reset_chunks
 
@@ -74,6 +80,35 @@ def health_check():
 
 class QueryRequest(BaseModel):
     query: str
+
+
+def resolve_active_document_id() -> str:
+    """Resolve a canonical completed document ID for request-scoped retrieval."""
+    current_id = get_current_ipo()
+    if current_id:
+        try:
+            import uuid
+            uuid.UUID(str(current_id))
+            return str(current_id)
+        except (ValueError, AttributeError, TypeError):
+            pass
+
+    result = execute_supabase(
+        "resolve active completed document",
+        supabase.table("documents")
+        .select("id")
+        .eq("processing_status", "completed"),
+    )
+    documents = result.data or []
+    if not documents:
+        raise ValueError("No completed document is available. Upload a DRHP PDF first using /upload")
+    if len(documents) > 1:
+        raise ValueError("Multiple completed documents are available. Select a document before asking a question.")
+
+    document_id = documents[0].get("id")
+    if not document_id:
+        raise ValueError("The completed document record has no canonical document ID.")
+    return str(document_id)
 
 
 # --------------------------------------------------
@@ -150,7 +185,11 @@ async def upload_pdf(file: UploadFile = File(...)):
         start_time = time.time()
         chunks_count = load_chunk_documents()
         elapsed = time.time() - start_time
-        
+
+        document_result = get_document_by_hash(compute_document_hash(save_path))
+        if not document_result.data:
+            raise RuntimeError("Ingestion completed but the canonical document record could not be resolved.")
+        ipo_id = str(document_result.data[0]["id"])
         set_current_ipo(ipo_id)
         reset_chunks()
 
@@ -235,12 +274,8 @@ def ask(req: QueryRequest):
         - sources: Section, page, document references
     """
     try:
-        ipo_id = get_current_ipo()
-
-        if not ipo_id:
-            raise ValueError(
-                "No IPO uploaded. Please upload a DRHP PDF first using /upload"
-            )
+        ipo_id = resolve_active_document_id()
+        set_current_ipo(ipo_id)
 
         print(f"\n[API] /ask: Query = '{req.query[:60]}'")
         print(f"[API] /ask: IPO ID = {ipo_id}")
