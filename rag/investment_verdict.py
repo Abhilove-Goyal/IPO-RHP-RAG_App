@@ -10,20 +10,12 @@ def generate_investment_verdict(decision_report: list[dict]) -> dict:
         1 for q in decision_report
         if "insufficient disclosure" in q["answer"].lower()
     )
-
     if avg_confidence >= 70 and insufficient_count <= 2:
         verdict = "PROCEED"
     elif avg_confidence >= 45:
         verdict = "CAUTION"
     else:
         verdict = "AVOID"
-
-    llm = ChatOpenAI(
-        model=settings.llm_model,
-        api_key=settings.groq_api_key,
-        base_url="https://api.groq.com/openai/v1",
-        temperature=0,
-    )
 
     summary_prompt = f"""
 You are an investment analyst.
@@ -49,6 +41,12 @@ Return ONLY plain text.
 """
 
     try:
+        llm = ChatOpenAI(
+            model=settings.groq_model,
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            temperature=0,
+        )
         reasoning = llm.invoke(summary_prompt).content.strip()
     except Exception as e:
         print(f"API Error in investment verdict generation: {str(e)}")

@@ -79,7 +79,7 @@ def get_sections_for_ipo(ipo_id: str):
         return []
 
 
-def run(query: str):
+def run(query: str, document_id: str | None = None):
     """
     Complete RAG pipeline with hierarchical retrieval.
     
@@ -91,24 +91,12 @@ def run(query: str):
     print(f"[MAIN] Query: {query[:80]}")
     print(f"[MAIN] ========================================\n")
 
-    # Get IPO from runtime state
-    ipo_id = runtime.get_current_ipo()
-
-    # If server restarted and runtime lost IPO, recover from DB
-    if ipo_id is None:
-        result = execute_supabase(
-            "recover uploaded document",
-            supabase.table("documents")
-            .select("id")
-            .limit(1)
-        )
-
-        if not result.data:
-            raise ValueError("No document uploaded yet. Please upload a DRHP PDF first.")
-
-        ipo_id = result.data[0]["id"]
-        runtime.set_current_ipo(ipo_id)
-        print(f"[MAIN] Using document from DB: {ipo_id}")
+    # Explicit request selection takes precedence over runtime state.
+    ipo_id = document_id or runtime.get_current_ipo()
+    if not ipo_id:
+        raise ValueError("No IPO selected. Please select an IPO or upload its RHP first.")
+    if document_id:
+        runtime.set_current_ipo(document_id)
 
     # Ensure embeddings exist
     ensure_embeddings_exist(ipo_id)

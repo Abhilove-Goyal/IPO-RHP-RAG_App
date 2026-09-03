@@ -206,7 +206,10 @@ def _extract_narrative_text(page) -> str:
 
 
 def split_asset_search_text(asset: Dict[str, Any], max_tokens: int | None = None) -> List[str]:
-    """Split an asset search representation only at serialized row boundaries."""
+    """Split an asset search representation without separating table rows."""
+    if asset.get("asset_type") == "table":
+        return _table_chunk_texts(asset, max_tokens=max_tokens)
+
     search_text = _normalize_whitespace(asset.get("search_text") or "")
     if not search_text:
         return []
@@ -233,6 +236,131 @@ def split_asset_search_text(asset: Dict[str, Any], max_tokens: int | None = None
     return chunks or [search_text]
 
 
+def _table_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"₹\s+", "₹", _normalize_whitespace(str(value)))
+
+
+def _table_row_text(row: Iterable[Any]) -> str:
+    return " | ".join(_table_cell_text(cell) for cell in row)
+
+
+def _is_table_section_label(text: str) -> bool:
+    normalized = text.strip().upper()
+    return normalized.startswith((
+        "THE PROMOTERS OF OUR COMPANY",
+        "DETAILS OF THE OFFER",
+    ))
+
+
+def _is_table_header_fragment(cells: List[str]) -> bool:
+    if not cells:
+        return False
+    joined = " ".join(cells)
+    if len(joined) > 100 or re.search(r"\d|₹|up to|equity shares|million", joined, flags=re.IGNORECASE):
+        return False
+    return all(len(cell) <= 40 for cell in cells)
+
+
+def _logical_table_rows(rows: Iterable[Iterable[Any]]) -> List[str]:
+    """Fold PDF line-wrap fragments into searchable, contextual table rows."""
+    logical_rows: List[str] = []
+    section_context: List[str] = []
+    header_fragments: List[str] = []
+
+    for raw_row in rows:
+        cells = [_table_cell_text(cell) for cell in raw_row]
+        cells = [cell for cell in cells if cell]
+        if not cells:
+            continue
+
+        row_text = _table_row_text(cells)
+        if _is_table_section_label(row_text):
+            if row_text not in section_context:
+                section_context.append(row_text)
+            continue
+
+        if _is_table_header_fragment(cells):
+            header_fragments.extend(cells)
+            continue
+
+        context_lines = list(section_context)
+        if header_fragments:
+            context_lines.append("COLUMN CONTEXT: " + _table_row_text(header_fragments))
+            header_fragments = []
+        context = "\n".join(f"TABLE CONTEXT: {line}" for line in context_lines)
+        logical_rows.append(f"{context}\nROW DATA: {row_text}" if context else row_text)
+
+    if header_fragments:
+        context_lines = list(section_context)
+        context_lines.append("COLUMN CONTEXT: " + _table_row_text(header_fragments))
+        logical_rows.append("\n".join(f"TABLE CONTEXT: {line}" for line in context_lines))
+    return logical_rows
+
+
+def _table_chunk_texts(asset: Dict[str, Any], max_tokens: int | None = None) -> List[str]:
+    """Render self-contained table chunks, keeping headers with complete rows."""
+    headers = list(asset.get("headers") or [])
+    rows = [list(row or []) for row in (asset.get("rows") or [])]
+    if not headers and rows:
+        headers = rows.pop(0)
+    if not headers:
+        return []
+
+    asset_metadata = asset.get("metadata") or {}
+    caption = (
+        asset.get("caption")
+        or asset.get("title")
+        or asset_metadata.get("caption")
+        or asset_metadata.get("title")
+        or "Untitled table"
+    )
+    page_number = asset.get("page_number") or asset_metadata.get("page_number")
+    source_identifier = asset.get("source_identifier") or asset_metadata.get("source_identifier") or asset_metadata.get("table_id")
+    section = asset.get("section") or asset_metadata.get("section")
+    subsection = asset.get("subsection") or asset_metadata.get("subsection")
+
+    prefix = [f"TABLE: {_table_cell_text(caption)}"]
+    if page_number is not None:
+        prefix.append(f"PAGE: {page_number}")
+    if source_identifier:
+        prefix.append(f"SOURCE: {_table_cell_text(source_identifier)}")
+    if section:
+        prefix.append(f"SECTION: {_table_cell_text(section)}")
+    if subsection:
+        prefix.append(f"SUBSECTION: {_table_cell_text(subsection)}")
+    header_text = _table_row_text(headers)
+    raw_table_text = " ".join(_table_row_text(row) for row in rows)
+    searchable_text = f"{header_text} {raw_table_text}"
+    searchable_terms = []
+    if re.search(r"fresh issue", searchable_text, flags=re.IGNORECASE):
+        searchable_terms.append("Fresh Issue")
+    if re.search(r"offer for sale", searchable_text, flags=re.IGNORECASE):
+        searchable_terms.append("Offer for Sale")
+    if re.search(r"total", searchable_text, flags=re.IGNORECASE) and re.search(r"offer", searchable_text, flags=re.IGNORECASE):
+        searchable_terms.append("Total Offer")
+    terms_text = f"\nKEY TERMS: {' | '.join(searchable_terms)}" if searchable_terms else ""
+    prefix_text = "\n".join(prefix) + "\nSOURCE_TYPE: table\n\nHEADERS:\n" + header_text + terms_text
+    row_blocks = [f"ROW:\n{row}" for row in _logical_table_rows(rows)]
+    if not row_blocks:
+        return [prefix_text]
+
+    max_tokens = max_tokens or settings.chunk_size
+    chunks: List[str] = []
+    current = prefix_text
+    for row_block in row_blocks:
+        candidate = f"{current}\n\n{row_block}"
+        if current != prefix_text and count_tokens(candidate) > max_tokens:
+            chunks.append(current)
+            current = f"{prefix_text}\n\n{row_block}"
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def build_asset_chunk_entries(
     *,
     document_id: str,
@@ -247,6 +375,7 @@ def build_asset_chunk_entries(
     entries = []
     for offset, text in enumerate(text_parts, start=1):
         identifier = asset_identifier if len(text_parts) == 1 else f"{asset_identifier}-{offset}"
+        asset_metadata = asset.get("metadata") or {}
         metadata = {
             "document_name": document_name,
             "page_number": asset.get("page_number"),
@@ -260,7 +389,12 @@ def build_asset_chunk_entries(
             "caption": asset.get("caption"),
         }
         if asset.get("asset_type") == "table":
-            metadata.update({"headers": asset.get("headers") or [], "rows": asset.get("rows") or []})
+            metadata.update({
+                "headers": asset.get("headers") or [],
+                "rows": asset.get("rows") or [],
+                "representative_values": asset.get("representative_values") or [],
+                "table_id": asset.get("table_id") or asset_metadata.get("table_id") or asset_identifier,
+            })
         entries.append({
             "document_id": document_id,
             "document_name": document_name,
@@ -313,10 +447,11 @@ def _extract_table_metadata(page, page_number: int, section: str, subsection: st
         table_rows.append({
             "asset_type": "table",
             "source_identifier": f"page-{page_number}-table-{idx + 1}",
+            "table_id": f"page-{page_number}-table-{idx + 1}",
             "caption": f"Table {idx + 1}",
             "search_text": table_text,
             "headers": table[0] if table and table[0] else [],
-            "rows": table[1:10] if table else [],
+            "rows": table[1:] if table else [],
             "representative_values": representative_row[:12],
             "page_number": page_number,
             "section": section,
@@ -431,21 +566,23 @@ def build_document_chunks(pdf_path: str | Path) -> List[Dict[str, Any]]:
 
             page_tables = _extract_table_metadata(page, page_number, section)
             for table_asset in page_tables:
-                chunks.append({
-                    "text": table_asset["search_text"],
-                    "metadata": {
-                        "document_name": path.name,
-                        "page_number": page_number,
-                        "section": section,
-                        "subsection": table_asset.get("subsection"),
-                        "chunk_index": chunk_index,
-                        "source_type": "table",
-                        "source_identifier": table_asset["source_identifier"],
-                        "asset_type": "table",
-                        "caption": table_asset.get("caption"),
-                    },
-                })
-                chunk_index += 1
+                for table_chunk in split_asset_search_text(table_asset):
+                    chunks.append({
+                        "text": table_chunk,
+                        "metadata": {
+                            "document_name": path.name,
+                            "page_number": page_number,
+                            "section": section,
+                            "subsection": table_asset.get("subsection"),
+                            "chunk_index": chunk_index,
+                            "source_type": "table",
+                            "source_identifier": table_asset["source_identifier"],
+                            "asset_type": "table",
+                            "caption": table_asset.get("caption"),
+                            "table_id": table_asset.get("table_id") or table_asset["source_identifier"],
+                        },
+                    })
+                    chunk_index += 1
 
             narrative_chunks = split_into_semantic_chunks(cleaned, chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
             for narrative in narrative_chunks:

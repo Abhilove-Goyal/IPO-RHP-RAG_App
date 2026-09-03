@@ -5,8 +5,101 @@ Provides formatted context with full metadata for transparency and traceability.
 """
 
 import json
+import re
+from math import ceil
 
+from core.settings import settings
 from rag.intent_classification import classify_intent, STYLE_RULES
+
+
+TABLE_QUERY_TERMS = (
+    "table", "selling shareholder", "shareholders", "ofs", "fresh issue",
+    "offer for sale", "total offer", "promoter", "shareholding", "size",
+)
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    """Conservatively estimate tokens without adding a tokenizer dependency."""
+    value = text or ""
+    whitespace_tokens = len(re.findall(r"\S+", value))
+    character_tokens = ceil(len(value) / 3)
+    return max(whitespace_tokens, character_tokens)
+
+
+def _is_table_chunk(chunk: dict) -> bool:
+    metadata = chunk.get("metadata") or {}
+    return (chunk.get("source_type") or metadata.get("source_type")) == "table"
+
+
+def _format_evidence_block(index: int, chunk: dict) -> str:
+    metadata = chunk.get("metadata") or {}
+    page = chunk.get("page_number", metadata.get("page_number", "?"))
+    section = chunk.get("section", metadata.get("section", "Unknown Section"))
+    subsection = chunk.get("subsection", metadata.get("subsection")) or "Not specified"
+    doc = chunk.get("document_name", metadata.get("document_name", "Unknown Document"))
+    source_type = chunk.get("source_type", metadata.get("source_type", "text"))
+    text = chunk.get("chunk_text", "").strip()
+
+    lines = [
+        f"[{index}] [Document: {doc}]",
+        f"[Page: {page}]",
+        f"[Section: {section}]",
+        f"[Subsection: {subsection}]",
+        f"[Source: {source_type}]",
+    ]
+
+    asset_reference = (
+        chunk.get("source_identifier")
+        or metadata.get("source_identifier")
+        or chunk.get("asset_id")
+        or metadata.get("asset_id")
+    )
+    asset_type = chunk.get("asset_type") or metadata.get("asset_type")
+    caption = chunk.get("caption") or metadata.get("caption")
+    if asset_reference or asset_type or caption:
+        lines.append(
+            "[Asset: "
+            + json.dumps(
+                {"reference": asset_reference, "type": asset_type, "caption": caption},
+                ensure_ascii=True,
+            )
+            + "]"
+        )
+
+    if source_type == "table" or asset_type == "table":
+        headers = metadata.get("headers")
+        rows = metadata.get("rows")
+        if headers:
+            lines.append(f"[Table headers: {json.dumps(headers, ensure_ascii=True)}]")
+        # New table chunks already embed complete headers and rows. Repeating
+        # the full asset row array here can consume the entire model context.
+        if rows and not ("HEADERS:" in text and "ROW:" in text):
+            lines.append(f"[Table rows: {json.dumps(rows, ensure_ascii=True)}]")
+
+    lines.append(f"[Chunk text]\n{text}")
+    return "\n".join(lines)
+
+
+def select_context_chunks(question: str, context_chunks: list[dict], token_budget: int | None = None) -> list[dict]:
+    """Select whole evidence blocks within budget, preferring tables for table queries."""
+    budget = token_budget if token_budget is not None else settings.prompt_evidence_token_budget
+    chunks = list(context_chunks or [])
+    query = (question or "").casefold()
+    if any(term in query for term in TABLE_QUERY_TERMS):
+        chunks = [chunk for chunk in chunks if _is_table_chunk(chunk)] + [
+            chunk for chunk in chunks if not _is_table_chunk(chunk)
+        ]
+
+    selected = []
+    used = 0
+    for chunk in chunks:
+        block = _format_evidence_block(len(selected) + 1, chunk)
+        block_tokens = estimate_prompt_tokens(block)
+        if used + block_tokens > budget:
+            continue
+        selected.append(chunk)
+        used += block_tokens
+    return selected
 
 
 def format_evidence(context_chunks):
@@ -22,59 +115,7 @@ def format_evidence(context_chunks):
     Returns:
         Formatted evidence string
     """
-    evidence = []
-
-    for i, c in enumerate(context_chunks, 1):
-        metadata = c.get("metadata") or {}
-        page = c.get("page_number", metadata.get("page_number", "?"))
-        section = c.get("section", metadata.get("section", "Unknown Section"))
-        subsection = c.get("subsection", metadata.get("subsection")) or "Not specified"
-        doc = c.get("document_name", metadata.get("document_name", "Unknown Document"))
-        source_type = c.get("source_type", metadata.get("source_type", "text"))
-        text = c.get("chunk_text", "").strip()
-
-        lines = [
-            f"[{i}] [Document: {doc}]",
-            f"[Page: {page}]",
-            f"[Section: {section}]",
-            f"[Subsection: {subsection}]",
-            f"[Source: {source_type}]",
-        ]
-
-        asset_reference = (
-            c.get("source_identifier")
-            or metadata.get("source_identifier")
-            or c.get("asset_id")
-            or metadata.get("asset_id")
-        )
-        asset_type = c.get("asset_type") or metadata.get("asset_type")
-        caption = c.get("caption") or metadata.get("caption")
-        if asset_reference or asset_type or caption:
-            lines.append(
-                "[Asset: "
-                + json.dumps(
-                    {
-                        "reference": asset_reference,
-                        "type": asset_type,
-                        "caption": caption,
-                    },
-                    ensure_ascii=True,
-                )
-                + "]"
-            )
-
-        if source_type == "table" or asset_type == "table":
-            headers = metadata.get("headers")
-            rows = metadata.get("rows")
-            if headers:
-                lines.append(f"[Table headers: {json.dumps(headers, ensure_ascii=True)}]")
-            if rows:
-                lines.append(f"[Table rows: {json.dumps(rows, ensure_ascii=True)}]")
-
-        lines.append(f"[Chunk text]\n{text}")
-        evidence.append("\n".join(lines))
-
-    return "\n\n".join(evidence)
+    return "\n\n".join(_format_evidence_block(i, chunk) for i, chunk in enumerate(context_chunks, 1))
 
 
 def build_prompt(question: str, context_chunks: list[dict]) -> str:
@@ -90,7 +131,8 @@ def build_prompt(question: str, context_chunks: list[dict]) -> str:
     """
     intent = classify_intent(question)
     style_rules = STYLE_RULES[intent.value]
-    evidence_context = format_evidence(context_chunks)
+    selected_chunks = select_context_chunks(question, context_chunks)
+    evidence_context = format_evidence(selected_chunks)
 
     # Enhanced prompt with metadata awareness
     prompt = f"""You are a financial and IPO decision-analysis assistant.

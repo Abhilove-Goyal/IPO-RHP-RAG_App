@@ -1,111 +1,54 @@
-# rag/non_negotiable_questions.py
+"""Investor-first questions used to build a cross-IPO decision report."""
 
 NON_NEGOTIABLE_QUESTIONS = [
     {
-        "id": "internal_risks",
-        "display_question": "What are the key internal risks of the company?",
-        "analysis_prompt": """
-Analyze the internal risks disclosed in the DRHP, including but not limited to:
-- weaknesses in internal controls or compliance systems
-- operational execution and scalability risks
-- dependence on human judgment or manual processes
-- internal fraud or misconduct risks
-- IT systems and data security risks
-- limitations of internal audits or risk management frameworks
-
-Base the analysis strictly on disclosed Risk Factors and Internal Controls.
-Avoid speculation. If disclosures are limited, state this clearly.
-"""
+        "id": "company_overview",
+        "display_question": "What does the company do, and what are its main products, services, and markets?",
+        "analysis_prompt": "Summarize the company's business model, principal products or services, operating markets, and key business segments. Use only disclosed information.",
     },
     {
-        "id": "external_risks",
-        "display_question": "What are the key external and regulatory risks?",
-        "analysis_prompt": """
-Evaluate external and regulatory risks faced by the company, including:
-- dependence on regulatory approvals or licenses
-- exposure to changes in laws, policies, or enforcement
-- penalties, litigation, or enforcement risks
-- sector-specific regulatory constraints
-
-Use only disclosed regulatory and legal risk factors.
-"""
+        "id": "offer_structure",
+        "display_question": "What is the IPO offer structure, including fresh issue, OFS, total offer, and selling shareholders?",
+        "analysis_prompt": "Extract the disclosed IPO structure, including fresh issue size, offer for sale size, total offer size, share counts, and named selling shareholders. Clearly label any amount shown as a placeholder or not disclosed.",
     },
     {
-        "id": "governance_controls",
-        "display_question": "How strong are the company’s internal controls and governance framework?",
-        "analysis_prompt": """
-Assess the company’s governance and internal control framework, including:
-- board composition and independence
-- audit committee effectiveness
-- internal audit mechanisms
-- related-party transaction oversight
-- management accountability structures
-
-Base conclusions strictly on disclosed governance and control information.
-"""
+        "id": "use_of_proceeds",
+        "display_question": "How will the IPO proceeds be used?",
+        "analysis_prompt": "Summarize each disclosed use of proceeds and distinguish fresh-issue proceeds from selling-shareholder proceeds. State when a use or amount is not disclosed.",
     },
     {
-        "id": "revenue_drivers",
-        "display_question": "What are the key revenue drivers and their sustainability?",
-        "analysis_prompt": """
-Analyze the company’s key revenue drivers, including:
-- primary business segments and services
-- customer concentration risks
-- pricing power and demand sustainability
-- dependence on volume growth vs margins
-
-Assess sustainability strictly from disclosed business and financial sections.
-"""
+        "id": "financial_performance",
+        "display_question": "What are the company’s recent financial performance and profitability trends?",
+        "analysis_prompt": "Report disclosed revenue, profit or loss, margins, and important year-over-year trends. Preserve units, periods, and exact figures; do not calculate missing metrics.",
     },
     {
-        "id": "financial_risks",
-        "display_question": "What are the major financial risks and the company’s liquidity position?",
-        "analysis_prompt": """
-Evaluate financial risks disclosed in the DRHP, including:
-- cash flow adequacy
-- liquidity position and working capital
-- debt obligations and repayment risks
-- historical losses or profitability trends
-
-Use only disclosed financial statements and risk factors.
-"""
+        "id": "growth_drivers",
+        "display_question": "What are the company’s growth drivers and key dependencies?",
+        "analysis_prompt": "Assess disclosed growth drivers, demand factors, customers, suppliers, partners, capacity, and concentration dependencies. Separate disclosed facts from limitations.",
     },
     {
-        "id": "third_party_dependency",
-        "display_question": "How dependent is the company on third parties or key partners?",
-        "analysis_prompt": """
-Analyze the company’s dependence on third parties, including:
-- logistics, vendors, or technology partners
-- concentration risks among suppliers or clients
-- contract renewals and termination risks
-
-Base analysis strictly on disclosed dependencies.
-"""
+        "id": "risk_factors",
+        "display_question": "What are the most important risks an IPO investor should know first?",
+        "analysis_prompt": "Prioritize material business, financial, operational, market, regulatory, legal, and execution risks disclosed in the DRHP. Avoid generic speculation.",
     },
     {
-        "id": "legal_litigation",
-        "display_question": "What are the major legal, compliance, and litigation risks?",
-        "analysis_prompt": """
-Assess legal and compliance risks, including:
-- ongoing or past litigations
-- regulatory investigations or notices
-- compliance failures or penalties
-- material contingent liabilities
-
-Rely strictly on disclosed legal proceedings and risk factors.
-"""
+        "id": "promoters_governance",
+        "display_question": "Who are the promoters, and what governance information should investors know?",
+        "analysis_prompt": "Identify disclosed promoters and summarize relevant promoter holdings, management responsibilities, board and committee structure, related-party matters, and governance risks.",
     },
     {
-        "id": "disclosure_quality",
-        "display_question": "Based on the DRHP, how reliable and transparent are the company’s disclosures?",
-        "analysis_prompt": """
-Evaluate the overall quality and transparency of disclosures, including:
-- completeness of risk disclosures
-- clarity of financial reporting
-- use of placeholders or generic statements
-- consistency across sections
-
-Judge transparency strictly from the DRHP content.
-"""
-    }
+        "id": "debt_liquidity",
+        "display_question": "What are the company’s debt, cash flow, working-capital, and liquidity risks?",
+        "analysis_prompt": "Summarize disclosed borrowings, repayment obligations, working-capital needs, cash flows, defaults, guarantees, and liquidity constraints. State when information is unavailable.",
+    },
+    {
+        "id": "legal_regulatory",
+        "display_question": "What material legal, regulatory, tax, and contingent-liability issues are disclosed?",
+        "analysis_prompt": "Summarize material litigation, regulatory proceedings, tax matters, penalties, claims, and contingent liabilities disclosed in the filing.",
+    },
+    {
+        "id": "valuation_disclosures",
+        "display_question": "What IPO pricing and valuation information is disclosed, and what remains unavailable?",
+        "analysis_prompt": "Report disclosed price-band, valuation, EPS, P/E, dilution, and comparable-company information. Do not infer valuation when the relevant price or metric is not disclosed.",
+    },
 ]

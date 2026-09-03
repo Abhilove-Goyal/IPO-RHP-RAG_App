@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     rerank_top_k: int = 5
     final_top_k: int = 5
+    prompt_evidence_token_budget: int = 4000
     data_path: str = "data"
     log_path: str = "logs/results.json"
     docs_dir: Path = Path("data/docs")

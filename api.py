@@ -80,35 +80,59 @@ def health_check():
 
 class QueryRequest(BaseModel):
     query: str
+    document_id: str | None = None
 
 
-def resolve_active_document_id() -> str:
-    """Resolve a canonical completed document ID for request-scoped retrieval."""
-    current_id = get_current_ipo()
-    if current_id:
-        try:
-            import uuid
-            uuid.UUID(str(current_id))
-            return str(current_id)
-        except (ValueError, AttributeError, TypeError):
-            pass
+class DecisionReportRequest(BaseModel):
+    document_id: str | None = None
 
+
+def list_completed_documents():
     result = execute_supabase(
-        "resolve active completed document",
+        "list completed documents",
         supabase.table("documents")
-        .select("id")
+        .select("id,document_name,company_name,processing_status")
         .eq("processing_status", "completed"),
     )
-    documents = result.data or []
-    if not documents:
-        raise ValueError("No completed document is available. Upload a DRHP PDF first using /upload")
-    if len(documents) > 1:
-        raise ValueError("Multiple completed documents are available. Select a document before asking a question.")
+    return [
+        {
+            "id": row["id"],
+            "name": row.get("company_name") or row.get("document_name") or str(row["id"]),
+            "status": "completed",
+        }
+        for row in (result.data or [])
+        if row.get("id") and row.get("processing_status") == "completed"
+    ]
 
-    document_id = documents[0].get("id")
-    if not document_id:
-        raise ValueError("The completed document record has no canonical document ID.")
-    return str(document_id)
+
+def resolve_active_document_id(request_document_id: str | None = None) -> str:
+    """Resolve only an explicitly selected, completed canonical document UUID."""
+    import uuid
+
+    selected_id = request_document_id or get_current_ipo()
+    if not selected_id:
+        raise ValueError("No IPO selected. Please select an IPO or upload its RHP first.")
+    try:
+        canonical_id = str(uuid.UUID(str(selected_id)))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("Invalid document_id. Select a completed IPO document.") from exc
+
+    result = execute_supabase(
+        "validate selected completed document",
+        supabase.table("documents")
+        .select("id")
+        .eq("id", canonical_id)
+        .eq("processing_status", "completed")
+        .limit(1),
+    )
+    if not result.data:
+        raise ValueError("Selected IPO document was not found or is not completed.")
+    return canonical_id
+
+
+@app.get("/ipos")
+def completed_ipos():
+    return {"ipos": list_completed_documents()}
 
 
 # --------------------------------------------------
@@ -198,6 +222,8 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         return {
             "status": "uploaded",
+            "document_id": ipo_id,
+            "name": document_result.data[0].get("company_name") or document_result.data[0].get("document_name") or ipo_id,
             "ipo_id": ipo_id,
             "chunks_created": chunks_count,
             "processing_time_seconds": round(elapsed, 2),
@@ -231,17 +257,12 @@ async def upload_pdf(file: UploadFile = File(...)):
 # --------------------------------------------------
 
 @app.post("/decision-report")
-def decision_report():
+def decision_report(req: DecisionReportRequest | None = None):
 
-    ipo_id = get_current_ipo()
+    ipo_id = resolve_active_document_id(req.document_id if req else None)
+    set_current_ipo(ipo_id)
 
-    if not ipo_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No IPO uploaded. Upload a DRHP first."
-        )
-
-    report = generate_decision_report()
+    report = generate_decision_report(document_id=ipo_id)
     verdict = generate_investment_verdict(report)
 
     pprint(report)
@@ -274,14 +295,14 @@ def ask(req: QueryRequest):
         - sources: Section, page, document references
     """
     try:
-        ipo_id = resolve_active_document_id()
+        ipo_id = resolve_active_document_id(req.document_id)
         set_current_ipo(ipo_id)
 
         print(f"\n[API] /ask: Query = '{req.query[:60]}'")
         print(f"[API] /ask: IPO ID = {ipo_id}")
 
         # Run hierarchical RAG pipeline from main.py
-        answer, faithfulness = run(req.query)
+        answer, faithfulness = run(req.query, document_id=ipo_id)
 
         # Extract source information from the answer for display
         # (metadata is embedded in the answer text)
