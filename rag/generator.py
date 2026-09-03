@@ -5,9 +5,17 @@ Generates answers from retrieved chunks with full citation support.
 """
 
 from typing import List, Dict
-from langchain_openai import ChatOpenAI
 from core.settings import settings
+from rag.model_routing import invoke_with_fallback
 from rag.prompt_builder import build_prompt
+
+
+def clean_answer(text: str) -> str:
+    """Remove only control characters that cannot carry answer meaning."""
+    if not isinstance(text, str):
+        return text
+    cleaned = "".join(character for character in text if character in "\n\r\t" or ord(character) >= 32)
+    return cleaned if cleaned.strip() else text
 
 
 def generate_answer(query: str, context_chunks: List[Dict]) -> tuple[str, float]:
@@ -33,20 +41,15 @@ def generate_answer(query: str, context_chunks: List[Dict]) -> tuple[str, float]
         print(f"[GENERATOR] Query: {query[:60]}")
         print(f"[GENERATOR] Context chunks: {len(context_chunks)}")
         
-        llm = ChatOpenAI(
-            model=settings.groq_model,
-            api_key=settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            temperature=0,
-        )
-
         # Build prompt with full metadata
         prompt = build_prompt(query, context_chunks)
         
         print(f"[GENERATOR] Calling LLM...")
-        response = llm.invoke(prompt)
-        
-        answer_text = response.content.strip()
+        result = invoke_with_fallback(prompt)
+        if result.status != "SUCCESS":
+            raise result.error or RuntimeError("All configured models failed")
+
+        answer_text = clean_answer(result.text)
         
         # Calculate faithfulness score based on context usage
         faithfulness_score = min(1.0, len(context_chunks) / 5.0) if context_chunks else 0.0
