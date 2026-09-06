@@ -7,6 +7,7 @@ from rag.retriever import hybrid_search, rerank_hybrid_candidates
 from rag.prompt_builder import estimate_prompt_tokens, format_evidence, select_context_chunks
 from rag.ingestion import load_chunk_documents
 from rag.non_negotiable_questions import NON_NEGOTIABLE_QUESTIONS
+from rag.investor_snapshot import build_investor_snapshot
 from rag.model_routing import invoke_with_fallback
 from core.supabase_client import get_document_stats
 
@@ -42,18 +43,32 @@ def ensure_embeddings_exist(ipo_id: str):
 
 
 def _question_prompt(question: dict, evidence_context: str) -> str:
-    return f"""
-You are a financial analyst preparing an investment decision report based strictly on a DRHP.
+    target_metrics_clause = ""
+    if question.get("target_metrics"):
+        metrics_list = ", ".join(f'"{m}": "..."' for m in question["target_metrics"])
+        target_metrics_clause = (
+            f'\nOptional "key_metrics": If exact facts are disclosed in the evidence for any of {{{metrics_list}}}, '
+            'include them in a "key_metrics" JSON object. Otherwise leave "key_metrics": {}. Never guess or extrapolate.'
+        )
+
+    return f"""You are a financial analyst preparing an investment decision report based strictly on a DRHP.
 
 Question: {question['display_question']}
 Instructions: {question['analysis_prompt']}
 
-Use ONLY the evidence below. Do not invent facts. Preserve exact financial numbers and citations.
+CRITICAL RULES:
+1. Use ONLY the evidence below. Never invent or assume facts or numbers.
+2. Preserve exact numerical precision, currency, periods, and units.
+3. If information is not disclosed or evidence is insufficient, explicitly state in "answer" that the evidence does not disclose sufficient information.
+4. If this is a financial, capital structure, or shareholding question, extract exact figures directly from disclosed tables where available.
+5. If this is a litigation question, provide a structured breakdown covering matter type, entity/person involved, case count, monetary exposure, status, relevant dates, and investor implications.
+{target_metrics_clause}
+
 Evidence:
 {evidence_context}
 
 Return ONLY valid JSON in this exact format:
-{{"answer":"...","pros":[],"cons":[],"confidence_score":0,"citations":[{{"page":123}}]}}
+{{"answer":"...","pros":[],"cons":[],"confidence_score":0,"citations":[{{"page":123}}],"key_metrics":{{}}}}
 """
 
 
@@ -64,11 +79,12 @@ def _failed_result(status: str) -> dict:
         "cons": ["Model/API failure"],
         "confidence_score": 0,
         "citations": [],
+        "key_metrics": {},
         "status": status,
     }
 
 
-def generate_decision_report(document_id: str | None = None):
+def generate_decision_report(document_id: str | None = None) -> list[dict]:
     ipo_id = document_id or runtime.get_current_ipo()
     if not ipo_id:
         raise ValueError("No IPO uploaded or selected.")
@@ -80,7 +96,12 @@ def generate_decision_report(document_id: str | None = None):
         reranked_chunks = rerank_hybrid_candidates(
             question["display_question"], fused_chunks, top_k=settings.final_top_k
         )
-        selected = select_context_chunks(question["display_question"], reranked_chunks, token_budget=900)
+        selected = select_context_chunks(
+            question["display_question"],
+            reranked_chunks,
+            token_budget=900,
+            prioritize_tables=question.get("prioritize_tables", False),
+        )
         result = invoke_with_fallback(_question_prompt(question, format_evidence(selected)))
         if result.status != "SUCCESS":
             parsed = _failed_result(result.status)
@@ -94,9 +115,14 @@ def generate_decision_report(document_id: str | None = None):
                 parsed = _failed_result("MODEL_ERROR")
 
         parsed["confidence_score"] = normalize_confidence_score(parsed.get("confidence_score"))
+        if "key_metrics" not in parsed or not isinstance(parsed["key_metrics"], dict):
+            parsed["key_metrics"] = {}
+
         report.append(sanitize({
             "id": question["id"],
+            "title": question.get("title", question["id"].upper()),
             "question": question["display_question"],
             **parsed,
         }))
     return report
+

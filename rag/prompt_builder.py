@@ -15,6 +15,12 @@ from rag.intent_classification import classify_intent, STYLE_RULES
 TABLE_QUERY_TERMS = (
     "table", "selling shareholder", "shareholders", "ofs", "fresh issue",
     "offer for sale", "total offer", "promoter", "shareholding", "size",
+    "capital history", "equity capital", "capital structure", "share capital",
+    "promoter holdings", "promoter group", "bonus", "split", "preferential",
+    "allotment", "private placement", "use of proceeds", "objects of the offer",
+    "proceeds", "financial performance", "ratios", "ebitda", "pat", "roe",
+    "roce", "balance sheet", "cash flow", "borrowings", "debt", "litigation",
+    "proceedings", "contingent liabilities", "tax disputes",
 )
 
 
@@ -80,12 +86,17 @@ def _format_evidence_block(index: int, chunk: dict) -> str:
     return "\n".join(lines)
 
 
-def select_context_chunks(question: str, context_chunks: list[dict], token_budget: int | None = None) -> list[dict]:
-    """Select whole evidence blocks within budget, preferring tables for table queries."""
+def select_context_chunks(
+    question: str,
+    context_chunks: list[dict],
+    token_budget: int | None = None,
+    prioritize_tables: bool = False,
+) -> list[dict]:
+    """Select whole evidence blocks within budget, preferring tables for table queries or when requested."""
     budget = token_budget if token_budget is not None else settings.prompt_evidence_token_budget
     chunks = list(context_chunks or [])
     query = (question or "").casefold()
-    if any(term in query for term in TABLE_QUERY_TERMS):
+    if prioritize_tables or any(term in query for term in TABLE_QUERY_TERMS):
         chunks = [chunk for chunk in chunks if _is_table_chunk(chunk)] + [
             chunk for chunk in chunks if not _is_table_chunk(chunk)
         ]

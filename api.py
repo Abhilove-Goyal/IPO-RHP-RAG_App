@@ -19,6 +19,7 @@ from core.supabase_client import (
 
 from rag.decision_report_generator import generate_decision_report, sanitize
 from rag.investment_verdict import generate_investment_verdict
+from rag.investor_snapshot import build_investor_snapshot
 from rag.upload import list_all_ipos, delete_ipo_vectors, get_ipo_stats
 from rag.ingestion import compute_document_hash, load_chunk_documents
 
@@ -264,12 +265,14 @@ def decision_report(req: DecisionReportRequest | None = None):
 
     report = generate_decision_report(document_id=ipo_id)
     verdict = generate_investment_verdict(report)
+    snapshot = build_investor_snapshot(report, document_id=ipo_id)
 
     pprint(report)
 
     return {
         "report": sanitize(report),
-        "verdict": verdict
+        "verdict": verdict,
+        "investor_snapshot": sanitize(snapshot),
     }
 
 
