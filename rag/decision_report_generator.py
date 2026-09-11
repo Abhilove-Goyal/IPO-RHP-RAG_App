@@ -30,6 +30,7 @@ def normalize_confidence_score(value) -> float:
         score = float(value)
     except (TypeError, ValueError):
         return 0.0
+    # If the score is a fraction (0‑1), convert to a percentage
     if 0.0 <= score <= 1.0:
         score *= 100.0
     return round(max(0.0, min(100.0, score)), 1)

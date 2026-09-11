@@ -13,6 +13,9 @@ Chroma or any second vector store.
 from __future__ import annotations
 
 import time
+import os
+import json
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from core.settings import settings
@@ -20,6 +23,9 @@ from core.supabase_client import retrieve_document_chunks
 from rag.bm25_retriever import BM25Retriever
 from rag.jina_embeddings import embed_query
 from rag.jina_reranker import rerank_documents
+
+# Enable optional debug output via RAG_DEBUG env var
+RAG_DEBUG = os.getenv("RAG_DEBUG", "0") == "1"
 
 VECTOR_TOP_K = settings.vector_top_k
 BM25_TOP_K = settings.bm25_top_k
@@ -185,6 +191,14 @@ def hybrid_search(
     start = time.perf_counter()
     vector_results = vector_search(query, document_id, top_k=vector_top_k)
     bm25_results = bm25_search(query, document_id, top_k=bm25_top_k)
+    # Optional debug output of raw candidate IDs
+    if RAG_DEBUG:
+        debug_data = {
+            "query": query,
+            "vector_ids": [_candidate_key(c) for c in vector_results],
+            "bm25_ids": [_candidate_key(c) for c in bm25_results]
+        }
+        Path("scratch/retrieval_debug.json").write_text(json.dumps(debug_data, indent=2))
     fused = _rrf_fusion(vector_results, bm25_results, k=rrf_k, top_k=fusion_top_k)
     fused = _deduplicate_candidates(fused)
     print(f"[RETRIEVER] Hybrid fusion: {len(fused)} candidates in {time.perf_counter() - start:.3f}s")

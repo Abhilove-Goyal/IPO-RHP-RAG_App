@@ -24,11 +24,16 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 120
     top_k: int = 5
-    vector_top_k: int = 20
-    bm25_top_k: int = 20
-    fusion_top_k: int = 30
+    vector_top_k: int = 40  # increased from 20 to broaden vector candidates
+    bm25_top_k: int = 40   # increased from 20 to broaden BM25 candidates
+    fusion_top_k: int = 50 # increased from 30 to retain more fused results
     rrf_k: int = 60
     rerank_top_k: int = 5
+    # New retry configuration for LLM calls
+    llm_max_retries: int = 3  # number of attempts per model
+    llm_initial_backoff: int = 2  # seconds, exponential backoff base
+    # Optional fallback model (different from primary Groq model)
+    rag_fallback_model: str = "gpt-3.5-turbo"
     final_top_k: int = 5
     prompt_evidence_token_budget: int = 4000
     data_path: str = "data"
